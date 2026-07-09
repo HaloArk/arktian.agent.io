@@ -1,27 +1,166 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>我的智能助手</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { height: 100%; background: #f5f5f5; }
-    iframe {
-      width: 100%;
-      height: 100%;
-      border: none;
-      position: fixed;
-      top: 0;
-      left: 0;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ecolab 内部红蓝分组系统</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,-apple-system}
+body{background:#f5f7fa;padding:40px 16px;text-align:center}
+.wrap{max-width:440px;margin:0 auto;background:#fff;padding:36px 24px;border-radius:18px;box-shadow:0 2px 16px rgba(0,0,0,0.07)}
+h2{margin-bottom:28px;color:#111}
+.input-row{display:flex;gap:6px;align-items:center;margin-bottom:14px}
+#prefixInput{flex:1;padding:14px 16px;border:1px solid #ddd;border-radius:12px;font-size:16px;outline:none}
+.suffix-tag{font-size:16px;color:#444}
+#prefixInput:focus{border-color:#3671e9}
+button{width:100%;padding:15px;border:none;border-radius:12px;font-size:16px;font-weight:600;color:#fff;cursor:pointer;margin:6px 0}
+.btn-main{background:#2563eb}
+.btn-red{background:#ef4444}
+.btn-blue{background:#3b82f6}
+.btn-dark{background:#222}
+.btn-warning{background:#f59e0b}
+.result-box{margin-top:24px;padding:22px;border-radius:14px;font-size:22px;font-weight:bold;display:none;color:#fff}
+.tip{margin-top:16px;color:#666;font-size:14px}
+.admin-block{margin-top:36px;padding-top:24px;border-top:1px solid #eee}
+.record-list{margin-top:18px;text-align:left;max-height:300px;overflow:auto}
+.record-item{padding:9px 0;border-bottom:1px solid #eee;font-size:14px}
+</style>
 </head>
 <body>
-  <!-- 你的 Cloudflare Worker 地址 -->
-  <iframe
-    src="https://tiny-sunset-2716.arktian1.workers.dev"
-    allow="camera; microphone; fullscreen; clipboard-read; clipboard-write"
-  ></iframe>
+<div class="wrap">
+    <h2>Ecolab 红蓝随机分组</h2>
+    <div class="input-row">
+        <input id="prefixInput" placeholder="输入邮箱前缀" type="text">
+        <span class="suffix-tag">@ecolab.com</span>
+    </div>
+    <button class="btn-main" id="submitBtn">获取分组</button>
+    <div id="resultBox" class="result-box"></div>
+    <div class="tip">
+        1. 仅内部授权邮箱可参与；2. 同一设备30分钟仅能分组一次
+    </div>
+
+    <div class="admin-block">
+        <button class="btn-dark" id="viewRecordBtn">管理员查看本机记录</button>
+        <button class="btn-warning" id="clearAllBtn">管理员清空本机所有记录</button>
+        <div class="record-list" id="recordContainer"></div>
+    </div>
+</div>
+
+<script>
+// ====================== 配置区，上传前自行修改 ======================
+// 允许的邮箱前缀列表（自动拼接 @ecolab.com）
+const ALLOW_PREFIX = [
+    "admin",
+    "user01",
+    "user02",
+    "user03"
+];
+// 管理员邮箱前缀，完整邮箱 = ADMIN_PREFIX + @ecolab.com
+const ADMIN_PREFIX = "admin";
+// 冷却时间：30 分钟
+const LIMIT_MINUTE = 30;
+// ==================================================================
+const LIMIT_MS = LIMIT_MINUTE * 60 * 1000;
+const KEY_LIMIT = "group_device_limit";
+const KEY_RECORDS = "group_records";
+
+// 拼接完整企业邮箱
+function getFullEmail(prefix){
+    return prefix.trim().toLowerCase() + "@ecolab.com";
+}
+
+// 获取本地存储记录
+function getRecords(){
+    const raw = localStorage.getItem(KEY_RECORDS);
+    return raw ? JSON.parse(raw) : [];
+}
+
+// 保存分组记录（不再存姓名）
+function saveRecord(fullEmail, group){
+    const list = getRecords();
+    list.push({
+        email: fullEmail,
+        group: group,
+        time: new Date().toLocaleString()
+    });
+    localStorage.setItem(KEY_RECORDS, JSON.stringify(list));
+}
+
+// 校验前缀是否在授权名单
+function checkPrefixValid(prefix){
+    const lowPrefix = prefix.trim().toLowerCase();
+    return ALLOW_PREFIX.includes(lowPrefix);
+}
+
+// 校验30分钟冷却限制
+function checkCoolDown(){
+    const last = localStorage.getItem(KEY_LIMIT);
+    if(!last) return true;
+    const diff = Date.now() - Number(last);
+    if(diff < LIMIT_MS){
+        const waitMin = Math.ceil((LIMIT_MS - diff) / 60000);
+        alert(`冷却未结束，还需等待 ${waitMin} 分钟`);
+        return false;
+    }
+    return true;
+}
+
+// 点击获取分组
+document.getElementById("submitBtn").onclick = ()=>{
+    const prefix = document.getElementById("prefixInput").value.trim();
+    if(!prefix){
+        alert("请输入邮箱前缀");
+        return;
+    }
+    if(!checkPrefixValid(prefix)){
+        alert("该邮箱未授权，无法参与分组");
+        return;
+    }
+    if(!checkCoolDown()) return;
+
+    const fullMail = getFullEmail(prefix);
+    // 随机红蓝分组
+    const group = Math.random() > 0.5 ? "红组" : "蓝组";
+    localStorage.setItem(KEY_LIMIT, Date.now().toString());
+    saveRecord(fullMail, group);
+
+    const resBox = document.getElementById("resultBox");
+    resBox.style.display = "block";
+    resBox.className = "result-box " + (group === "红组" ? "btn-red" : "btn-blue");
+    resBox.innerText = `分配结果：${group}`;
+}
+
+// 查看本机记录（仅管理员前缀可用）
+document.getElementById("viewRecordBtn").onclick = ()=>{
+    const prefix = document.getElementById("prefixInput").value.trim().toLowerCase();
+    if(prefix !== ADMIN_PREFIX){
+        alert("仅管理员账号可查看记录");
+        return;
+    }
+    const list = getRecords();
+    let html = "";
+    if(list.length === 0){
+        html = `<div class="record-item">暂无本机分组记录</div>`;
+    }else{
+        list.forEach(item=>{
+            html += `<div class="record-item">${item.time}｜${item.email}｜${item.group}</div>`;
+        })
+    }
+    document.getElementById("recordContainer").innerHTML = html;
+}
+
+// 清空本机全部记录（仅管理员）
+document.getElementById("clearAllBtn").onclick = ()=>{
+    const prefix = document.getElementById("prefixInput").value.trim().toLowerCase();
+    if(prefix !== ADMIN_PREFIX){
+        alert("仅管理员账号可重置记录");
+        return;
+    }
+    if(!confirm("确认清空本机所有分组记录？其他设备数据不受影响")) return;
+    localStorage.removeItem(KEY_RECORDS);
+    localStorage.removeItem(KEY_LIMIT);
+    document.getElementById("recordContainer").innerHTML = `<div class="record-item">已清空本机记录</div>`;
+}
+</script>
 </body>
 </html>
