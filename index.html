@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ecolab 内部红蓝分组系统</title>
+<title>Ecolab 云端分组系统</title>
+<!-- 引入Supabase JS SDK -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,-apple-system}
 body{background:#f5f7fa;padding:40px 16px;text-align:center}
@@ -24,11 +26,12 @@ button{width:100%;padding:15px;border:none;border-radius:12px;font-size:16px;fon
 .admin-block{margin-top:36px;padding-top:24px;border-top:1px solid #eee}
 .record-list{margin-top:18px;text-align:left;max-height:300px;overflow:auto}
 .record-item{padding:9px 0;border-bottom:1px solid #eee;font-size:14px}
+.loading{color:#666;margin:10px 0}
 </style>
 </head>
 <body>
 <div class="wrap">
-    <h2>Ecolab 红蓝随机分组</h2>
+    <h2>Ecolab 红蓝云端分组</h2>
     <div class="input-row">
         <input id="prefixInput" placeholder="输入邮箱前缀" type="text">
         <span class="suffix-tag">@ecolab.com</span>
@@ -36,131 +39,153 @@ button{width:100%;padding:15px;border:none;border-radius:12px;font-size:16px;fon
     <button class="btn-main" id="submitBtn">获取分组</button>
     <div id="resultBox" class="result-box"></div>
     <div class="tip">
-        1. 仅内部授权邮箱可参与；2. 同一设备30分钟仅能分组一次
+        1.仅数据库授权邮箱可参与；2.同一设备30分钟仅可分组一次
     </div>
 
     <div class="admin-block">
-        <button class="btn-dark" id="viewRecordBtn">管理员查看本机记录</button>
-        <button class="btn-warning" id="clearAllBtn">管理员清空本机所有记录</button>
+        <button class="btn-dark" id="viewRecordBtn">管理员查看全部云端记录</button>
+        <button class="btn-warning" id="clearAllBtn">管理员全局重置所有分组</button>
+        <div class="loading" id="loadingTip"></div>
         <div class="record-list" id="recordContainer"></div>
     </div>
 </div>
 
 <script>
-// ====================== 配置区，上传前自行修改 ======================
-// 允许的邮箱前缀列表（自动拼接 @ecolab.com）
-const ALLOW_PREFIX = [
-    "admin",
-    "user01",
-    "user02",
-    "user03"
-];
-// 管理员邮箱前缀，完整邮箱 = ADMIN_PREFIX + @ecolab.com
-const ADMIN_PREFIX = "admin";
-// 冷却时间：30 分钟
-const LIMIT_MINUTE = 30;
-// ==================================================================
-const LIMIT_MS = LIMIT_MINUTE * 60 * 1000;
-const KEY_LIMIT = "group_device_limit";
-const KEY_RECORDS = "group_records";
+// ====================== 【请替换成你自己的Supabase信息】 ======================
+const SUPABASE_URL = "https://rsltfnxxwcrjsbdnnrbq.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_sb_publishable_CSrutYhQrnJ_oQwfwMHX1w_GAz8_fFB";
+const COOL_DOWN_MS = 30 * 60 * 1000; // 30分钟限制
+// ===========================================================================
 
-// 拼接完整企业邮箱
+// 初始化Supabase客户端
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// 生成当前设备唯一标识（区分手机/电脑）
+function getDeviceId(){
+    let did = localStorage.getItem("group_device_id");
+    if(!did){
+        did = Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localStorage.setItem("group_device_id", did);
+    }
+    return did;
+}
+const DEVICE_ID = getDeviceId();
+
+// 拼接完整邮箱
 function getFullEmail(prefix){
     return prefix.trim().toLowerCase() + "@ecolab.com";
 }
 
-// 获取本地存储记录
-function getRecords(){
-    const raw = localStorage.getItem(KEY_RECORDS);
-    return raw ? JSON.parse(raw) : [];
+// 校验前缀是否在白名单
+async function checkPrefixInAllow(prefix){
+    const lowPre = prefix.trim().toLowerCase();
+    const {data} = await supabase.from("allow_prefix").select("*").eq("prefix", lowPre);
+    return data.length > 0 ? data[0] : null;
 }
 
-// 保存分组记录（不再存姓名）
-function saveRecord(fullEmail, group){
-    const list = getRecords();
-    list.push({
-        email: fullEmail,
-        group: group,
-        time: new Date().toLocaleString()
-    });
-    localStorage.setItem(KEY_RECORDS, JSON.stringify(list));
-}
-
-// 校验前缀是否在授权名单
-function checkPrefixValid(prefix){
-    const lowPrefix = prefix.trim().toLowerCase();
-    return ALLOW_PREFIX.includes(lowPrefix);
-}
-
-// 校验30分钟冷却限制
-function checkCoolDown(){
-    const last = localStorage.getItem(KEY_LIMIT);
-    if(!last) return true;
-    const diff = Date.now() - Number(last);
-    if(diff < LIMIT_MS){
-        const waitMin = Math.ceil((LIMIT_MS - diff) / 60000);
-        alert(`冷却未结束，还需等待 ${waitMin} 分钟`);
+// 校验该设备30分钟内是否已提交过
+async function checkDeviceCoolDown(){
+    const now = Date.now();
+    const {data} = await supabase
+        .from("group_record")
+        .select("last_submit_time")
+        .eq("device_id", DEVICE_ID)
+        .order("last_submit_time", {asc:false})
+        .limit(1);
+    if(data.length === 0) return true;
+    const lastTime = data[0].last_submit_time;
+    if(now - lastTime < COOL_DOWN_MS){
+        const waitMin = Math.ceil((COOL_DOWN_MS - (now - lastTime)) / 60000);
+        alert(`冷却未结束，还需等待${waitMin}分钟`);
         return false;
     }
     return true;
 }
 
-// 点击获取分组
-document.getElementById("submitBtn").onclick = ()=>{
+// 提交分组逻辑
+document.getElementById("submitBtn").addEventListener("click", async ()=>{
     const prefix = document.getElementById("prefixInput").value.trim();
     if(!prefix){
         alert("请输入邮箱前缀");
         return;
     }
-    if(!checkPrefixValid(prefix)){
+    document.getElementById("loadingTip").innerText = "校验邮箱权限中...";
+    const allowInfo = await checkPrefixInAllow(prefix);
+    if(!allowInfo){
+        document.getElementById("loadingTip").innerText = "";
         alert("该邮箱未授权，无法参与分组");
         return;
     }
-    if(!checkCoolDown()) return;
-
+    // 校验冷却
+    const canSubmit = await checkDeviceCoolDown();
+    if(!canSubmit){
+        document.getElementById("loadingTip").innerText = "";
+        return;
+    }
+    document.getElementById("loadingTip").innerText = "分配分组中...";
     const fullMail = getFullEmail(prefix);
-    // 随机红蓝分组
     const group = Math.random() > 0.5 ? "红组" : "蓝组";
-    localStorage.setItem(KEY_LIMIT, Date.now().toString());
-    saveRecord(fullMail, group);
-
+    const nowTs = Date.now();
+    // 写入云端数据库
+    await supabase.from("group_record").insert([{
+        email: fullMail,
+        group_name: group,
+        device_id: DEVICE_ID,
+        last_submit_time: nowTs
+    }]);
+    document.getElementById("loadingTip").innerText = "";
+    // 展示结果
     const resBox = document.getElementById("resultBox");
     resBox.style.display = "block";
     resBox.className = "result-box " + (group === "红组" ? "btn-red" : "btn-blue");
     resBox.innerText = `分配结果：${group}`;
-}
+});
 
-// 查看本机记录（仅管理员前缀可用）
-document.getElementById("viewRecordBtn").onclick = ()=>{
+// 管理员读取全部云端记录
+document.getElementById("viewRecordBtn").addEventListener("click", async ()=>{
     const prefix = document.getElementById("prefixInput").value.trim().toLowerCase();
-    if(prefix !== ADMIN_PREFIX){
-        alert("仅管理员账号可查看记录");
+    const userInfo = await checkPrefixInAllow(prefix);
+    if(!userInfo || !userInfo.is_admin){
+        alert("仅管理员账号可查看全部记录");
         return;
     }
-    const list = getRecords();
+    document.getElementById("loadingTip").innerText = "正在加载云端全部记录...";
+    const {data, error} = await supabase
+        .from("group_record")
+        .select("email,group_name,create_at")
+        .order("create_at", {asc:false});
+    document.getElementById("loadingTip").innerText = "";
+    const container = document.getElementById("recordContainer");
+    if(error){
+        container.innerHTML = `<div class="record-item">读取失败：${error.message}</div>`;
+        return;
+    }
+    if(data.length === 0){
+        container.innerHTML = `<div class="record-item">暂无任何分组记录</div>`;
+        return;
+    }
     let html = "";
-    if(list.length === 0){
-        html = `<div class="record-item">暂无本机分组记录</div>`;
-    }else{
-        list.forEach(item=>{
-            html += `<div class="record-item">${item.time}｜${item.email}｜${item.group}</div>`;
-        })
-    }
-    document.getElementById("recordContainer").innerHTML = html;
-}
+    data.forEach(item=>{
+        const time = new Date(item.create_at).toLocaleString();
+        html += `<div class="record-item">${time}｜${item.email}｜${item.group_name}</div>`;
+    });
+    container.innerHTML = html;
+});
 
-// 清空本机全部记录（仅管理员）
-document.getElementById("clearAllBtn").onclick = ()=>{
+// 管理员全局重置（清空所有分组数据）
+document.getElementById("clearAllBtn").addEventListener("click", async ()=>{
     const prefix = document.getElementById("prefixInput").value.trim().toLowerCase();
-    if(prefix !== ADMIN_PREFIX){
-        alert("仅管理员账号可重置记录");
+    const userInfo = await checkPrefixInAllow(prefix);
+    if(!userInfo || !userInfo.is_admin){
+        alert("仅管理员账号可全局重置");
         return;
     }
-    if(!confirm("确认清空本机所有分组记录？其他设备数据不受影响")) return;
-    localStorage.removeItem(KEY_RECORDS);
-    localStorage.removeItem(KEY_LIMIT);
-    document.getElementById("recordContainer").innerHTML = `<div class="record-item">已清空本机记录</div>`;
-}
+    if(!confirm("确认清空云端所有人员分组记录？此操作不可恢复")) return;
+    document.getElementById("loadingTip").innerText = "正在清空云端数据...";
+    await supabase.from("group_record").delete().neq("id",0);
+    document.getElementById("loadingTip").innerText = "";
+    document.getElementById("recordContainer").innerHTML = `<div class="record-item">已全局重置，所有分组记录清空</div>`;
+});
 </script>
 </body>
 </html>
